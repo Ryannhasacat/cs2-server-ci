@@ -44,8 +44,8 @@ RUN mkdir -p ${STEAMCMD_DIR} \
     && ${STEAMCMD_DIR}/steamcmd.sh +quit || true
 
 # SteamCMD: cache Steam client + depots in /root/.steam for fast delta updates
+# (don't mount /opt/steamcmd — that's where the binaries live, mount would mask them)
 RUN --mount=type=cache,target=/root/.steam,sharing=locked \
-    --mount=type=cache,target=/opt/steamcmd,sharing=locked \
     ${STEAMCMD_DIR}/steamcmd.sh \
         +force_install_dir ${CS2_DIR} \
         +login anonymous \
