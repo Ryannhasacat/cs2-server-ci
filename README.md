@@ -16,7 +16,7 @@ CS2 专用服容器,**镜像不在服务器构建** —— 由 GitHub Actions (a
 ```
 cs2-server-building/
 ├── Dockerfile                          # 三阶段: 基础(无CS2) → plugins → runtime
-├── docker-compose.yml                  # cs2 + mysql;image 指向 GHCR;cs2-install volume
+├── docker-compose.yml                  # cs2 + mysql;image 指向 GHCR;CS2 bind mount 到云数据盘
 ├── .env.example                        # 复制为 .env (永远不入 git)
 ├── .dockerignore
 ├── .gitignore
@@ -25,7 +25,9 @@ cs2-server-building/
 │   ├── entrypoint.sh                   # 检测/下载 CS2 + envsubst + MySQL wait
 │   ├── start_cs2.sh                    # 拼 srcds 命令行 (含 GSLT)
 │   ├── server.cfg                      # 全局 cfg,MatchZy 不管的部分
-│   ├── scripts/fetch-plugins.sh        # 拉 7 个插件 zip
+│   ├── scripts/
+│   │   ├── fetch-plugins.sh            # 拉 7 个插件 zip (CI 跑)
+│   │   └── setup-cloud-disk.sh         # 初始化云数据盘 (服务器跑)
 │   ├── plugins/                        # zip 缓存 (gitignore, CI 拉取)
 │   └── configs/                        # 模板,entrypoint 注入 env
 │       ├── core.json                   # CSS FollowCS2ServerGuidelines=false
@@ -38,7 +40,7 @@ cs2-server-building/
 
 **镜像结构** (运行时):
 - **构建期包含**: ubuntu + apt 依赖 + SteamCMD (~2 MB) + 7 个插件 (≈150 MB)
-- **运行期下载**: CS2 游戏文件 ≈30 GB (进 `cs2-install` named volume,首次启动 SteamCMD)
+- **运行期下载**: CS2 游戏文件 ≈30 GB (进云数据盘 bind mount,首次启动 SteamCMD)
 - 镜像压缩后 ≈ **350 MB**,解后 ≈ 1 GB
 
 ## 1. 一次性配置 (本地 Mac)
@@ -91,7 +93,13 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
 sudo apt install -y docker-compose-plugin
 
-# 4) 拉预构建镜像 + 启动
+# 4) 云数据盘 (按量付费必备,见 §7)
+#    在云控制台:创建 50 GB 数据盘,挂载,设"随实例释放 = 否"
+#    然后初始化:
+sudo bash /opt/cs2-server/cs2/scripts/setup-cloud-disk.sh /dev/vdb
+#    (设备名按实际改;首次会格式化 + 加 fstab + chown 1001:1001)
+
+# 5) 拉预构建镜像 + 启动
 docker compose pull              # ~350 MB(只镜像本身,无 CS2)
 docker compose up -d             # 首次:cs2 容器后台下载 CS2,20-30 分钟
 docker compose logs -f cs2       # 看到 [entrypoint] MySQL ready 后等 SteamCMD 完成
@@ -132,7 +140,7 @@ git add . && git commit -m "升级 MatchZy" && git push
 # 服务器 — pull 镜像 + 重启
 ssh user@SERVER
 docker compose pull && docker compose up -d
-# entrypoint 看到 CS2 已存在(从 cs2-install volume),只跑 validate(delta update)
+# entrypoint 看到 CS2 已存在(从云数据盘),只跑 validate(delta update)
 ```
 
 ## 4. 端口
@@ -158,11 +166,13 @@ docker compose pull && docker compose up -d
 
 ## 6. 持久化数据
 
-| 卷 | 挂载 | 大小 | 内容 |
+| 卷 / 绑定 | 物理位置 | 大小 | 内容 |
 |---|---|---|---|
-| `cs2-install` | `/opt/cs2` | **~30 GB** | CS2 游戏文件,首次启动下载,后续 validate delta |
-| `cs2-serverdata` | `/opt/serverdata` | ~MB | server.cfg、MatchZy cfgs、WeaponPaints/MySQL 配置、demo、stats、logs |
-| `mysql-data` | `/var/lib/mysql` | ~MB-GB | 武器皮 + MatchZy 比赛统计 |
+| Bind mount | `/mnt/cs2-install/cs2` (云数据盘) → `/opt/cs2` | **~30 GB** | CS2 游戏文件,首次启动下载,后续 validate delta |
+| `cs2-serverdata` | Docker named volume (`/opt/serverdata`) | ~MB | server.cfg、MatchZy cfgs、WeaponPaints 配置、demo、stats、logs |
+| `mysql-data` | Docker named volume (`/var/lib/mysql`) | ~MB-GB | 武器皮 + MatchZy 比赛统计 |
+
+**关键点**:CS2 通过 bind mount 绑到**云数据盘**(`/mnt/cs2-install/cs2`),不依赖系统盘也不依赖 Docker named volume。这是为了**按量付费服务器**设计 —— 即使 VM 被释放(只要云盘没释放),CS2 仍然完整保留,新 VM 挂回云盘即用。详细见 §7。
 
 `cs2-serverdata` 内结构:
 | 路径 | 内容 |
@@ -175,9 +185,132 @@ docker compose pull && docker compose up -d
 | `csgo/MatchZy_Stats/` | MatchZy CSV 统计 |
 | `logs/` | 服务器日志 |
 
-`docker compose down` 不丢,`down -v` 才丢。
+`docker compose down` 不丢,`down -v` 才会清 named volumes(**不会**清云数据盘上的 CS2)。
 
-## 7. 常用运维
+## 7. 按量付费服务器:CS2 安装与更新机制
+
+这一节专门解决按量付费场景的两个问题:
+1. **"关机"是否会重下 30 GB CS2?** → 不会
+2. **CS2 后续怎么更新?** → 自动
+
+### 7.1 云数据盘设置(一次性)
+
+> **核心思想**:CS2(30 GB)从 VM 的"系统盘"上,移到独立的"数据盘"上。数据盘独立计费、独立生命周期。
+
+#### 在云控制台(以 Aliyun 为例,Tencent/华为云类似)
+
+1. ECS 控制台 → 你的实例 → "云盘" → "创建云盘"
+2. 参数:
+   - **容量:50 GB**(30 GB CS2 + 10 GB docker cache + 10 GB 余量)
+   - **类型:高效云盘或 SSD**(便宜够用)
+   - **计费:按量付费**
+3. 挂载到当前实例
+4. **关键一步**:云盘详情 → "更多" → **"随实例释放" = 否**
+   - Aliyun: "云盘属性" → "释放设置" → "随实例释放" 取消勾选
+   - Tencent: "设置自动续费" 旁边的 "到期回收" 关闭
+   - 华为云: "删除保护" 开启
+
+#### 在实例里初始化(SSH)
+
+```bash
+lsblk                                    # 看到新盘,假设是 /dev/vdb
+sudo bash /opt/cs2-server/cs2/scripts/setup-cloud-disk.sh /dev/vdb
+# 该脚本:
+#   - mkfs.ext4 (首次)
+#   - mkdir -p /mnt/cs2-install/cs2
+#   - 写 fstab 持久化
+#   - mount -a
+#   - chown 1001:1001 (容器内 steam 用户的 UID)
+```
+
+验证:
+```bash
+df -h /mnt/cs2-install   # 看到 ~50 GB
+ls -la /mnt/cs2-install  # 看到 cs2/ 子目录
+```
+
+### 7.2 日常 Stop/Start 不重下 CS2
+
+**Aliyun ECS Stop 行为**:
+- Stop 时:**计算资源(VCPU、内存)不收费**
+- 数据盘:继续按量计费(¥5-10/月)
+- **CS2 完整保留**(在数据盘上)
+- Start:几秒钟开机,容器内 entrypoint 看到 CS2 已存在 → 跑 `+app_update 730 validate` → 几秒-几分钟就绪
+
+```bash
+# 日常使用流程(按量付费)
+# 用完 → 控制台 Stop ECS(几秒钟)→ CS2 完整保留
+# 再用 → 控制台 Start ECS(几秒钟)→ ssh 进去 → docker compose up -d → 几秒到 1 分钟就绪
+```
+
+### 7.3 CS2 更新机制 — **全自动**
+
+每次容器启动,entrypoint 会跑:
+```bash
+# entrypoint.sh 节选
+if [ -x "${CS2_DIR}/game/bin/linux/cs2" ]; then
+    steamcmd +app_update 730 validate +quit
+fi
+```
+
+| 更新类型 | 频率 | 我们的处理 | 你要做的 |
+|---|---|---|---|
+| 小补丁(Valve 每周) | 高 | 容器启动自动 validate | **零操作** |
+| 大更新(1-3 月) | 中 | validate 会下载大文件(10-30 分钟) | 零操作,等久一点 |
+| 插件升级(MatchZy 等) | 中 | 改 `cs2/plugins/*.zip` → `git push` → 服务器 `docker compose pull && up -d` | 5 分钟 |
+| CSS 框架升级 | 低 | 同上 | 5 分钟 |
+
+**想立即检查/应用更新**(不必重启容器):
+```bash
+docker exec cs2-server /opt/steamcmd/steamcmd.sh \
+  +force_install_dir /opt/cs2 +login anonymous \
+  +app_update 730 validate +quit
+```
+
+### 7.4 强制重下 CS2
+
+CS2 出问题(文件损坏、版本冲突、想回到"完全干净"状态):
+
+```bash
+# 1. 停容器
+docker compose down
+
+# 2. 删数据盘上的 CS2 内容(只删 csgo/ 和 game/ 即可,保留容器外的元数据)
+sudo rm -rf /mnt/cs2-install/cs2/game /mnt/cs2-install/cs2/steamapps
+#   或者更彻底:
+# sudo rm -rf /mnt/cs2-install/cs2/*
+
+# 3. 重新拉起容器 → entrypoint 看到 /opt/cs2 空 → SteamCMD 重下(20-30 分钟)
+docker compose up -d
+docker compose logs -f cs2
+```
+
+### 7.5 数据盘迁移(VM 释放/换机器)
+
+如果 VM 因升级、迁移、故障重建:
+
+```bash
+# 旧 VM:停服
+docker compose down
+# 控制台:分离数据盘("卸载"而非"释放"),保留数据盘
+
+# 新 VM:关联数据盘 → ssh 进去
+sudo bash /opt/cs2-server/cs2/scripts/setup-cloud-disk.sh /dev/vdb
+# (新 VM 没数据盘,需先在云控制台把旧数据盘 attach)
+docker compose up -d
+# entrypoint 看到 CS2 已存在 → validate 几秒
+```
+
+### 7.6 重要提醒:别删错东西
+
+| 想做的 | 正确命令 | ❌ 错误命令 |
+|---|---|---|
+| 重下 CS2 | `sudo rm -rf /mnt/cs2-install/cs2/*` | 删 `/mnt/cs2-install` 整个 mount |
+| 改 server.cfg | `docker exec -it cs2-server vim /opt/serverdata/csgo/cfg/server.cfg` | 在镜像里改(重启丢失) |
+| 看 demo | `ls /opt/serverdata/csgo/MatchZy/` (在主机或容器) | 直接 `cat` 大文件(慢) |
+| 备份配置 | `tar czf cfg-$(date +%F).tgz /opt/serverdata/csgo/cfg/ /opt/serverdata/counterstrikesharp-configs/` | 用 `docker cp` 单文件(慢) |
+
+## 8. 常用运维
 
 ```bash
 docker compose logs -f cs2              # 看日志
@@ -197,7 +330,7 @@ docker exec -it cs2-server bash
 docker exec cs2-mysql mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --all-databases > backup-$(date +%F).sql
 ```
 
-## 8. 验证 CS2 客户端连通性
+## 9. 验证 CS2 客户端连通性
 
 ```
 CS2 → 设置 → 游戏 → 启用开发者控制台 ~
@@ -212,7 +345,7 @@ CS2 → 设置 → 游戏 → 启用开发者控制台 ~
 - RCON `meta list` → CounterStrikeSharp running
 - RCON `css_plugins list` → 5+ plugins (MatchZy, WeaponPaints, MenuManagerCore, PlayerSettings, AnyBaseLib)
 
-## 9. 故障排查
+## 10. 故障排查
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -222,9 +355,10 @@ CS2 → 设置 → 游戏 → 启用开发者控制台 ~
 | `!knife` 无反应 | WeaponPaints 未连 MySQL,看 `docker compose logs mysql` |
 | MatchZy 不响应 | `csgo/cfg/MatchZy/admins.json` 里 SteamID 是不是替换成了你的 (在 `cs2-serverdata` 卷里) |
 | `Access denied for user 'cs2'` | MySQL 没就绪就启了 cs2,看 entrypoint 日志中 MySQL wait 是否超时 |
-| 想强制重下 CS2(比如 CS2 出问题) | `docker compose down && docker volume rm cs2-server_cs2-install && docker compose up -d` |
+| 想强制重下 CS2(比如 CS2 出问题) | `sudo rm -rf /mnt/cs2-install/cs2/* && docker compose up -d`(详 §7.4) |
+| bind mount 失败 `/mnt/cs2-install/cs2` 不存在 | 数据盘没挂上,跑 `sudo bash cs2/scripts/setup-cloud-disk.sh /dev/vdb` |
 
-## 10. Security
+## 11. Security
 
 ### 仓库是 public,核心原则:镜像内不含任何 secret
 
@@ -269,7 +403,7 @@ chown $USER:$USER .env
 - ❌ 在 Dockerfile 里写 `ENV PASSWORD=...` (env 持留到镜像 metadata)
 - ❌ 公开 `docker history cs2-dedicated` 截图 (可能漏 env)
 
-## 11. 免责声明
+## 12. 免责声明
 
 **cs2-WeaponPaints** 改皮要求 `FollowCS2ServerGuidelines=false`,Valve 可能因此吊销 GSLT(作者 README 原文警告)。公网开服自担风险。
 
