@@ -15,18 +15,18 @@ CS2 专用服容器,**镜像不在服务器构建** —— 由 GitHub Actions (a
 
 ```
 cs2-server-building/
-├── Dockerfile                          # 三阶段: SteamCMD → plugins → runtime
-├── docker-compose.yml                  # cs2 + mysql;image 指向 GHCR
+├── Dockerfile                          # 三阶段: 基础(无CS2) → plugins → runtime
+├── docker-compose.yml                  # cs2 + mysql;image 指向 GHCR;cs2-install volume
 ├── .env.example                        # 复制为 .env (永远不入 git)
 ├── .dockerignore
 ├── .gitignore
 ├── README.md
 ├── cs2/
-│   ├── entrypoint.sh                   # envsubst + steamcmd update + MySQL wait
+│   ├── entrypoint.sh                   # 检测/下载 CS2 + envsubst + MySQL wait
 │   ├── start_cs2.sh                    # 拼 srcds 命令行 (含 GSLT)
 │   ├── server.cfg                      # 全局 cfg,MatchZy 不管的部分
 │   ├── scripts/fetch-plugins.sh        # 拉 7 个插件 zip
-│   ├── plugins/                        # zip 缓存 (gitignore, 运行时拉取)
+│   ├── plugins/                        # zip 缓存 (gitignore, CI 拉取)
 │   └── configs/                        # 模板,entrypoint 注入 env
 │       ├── core.json                   # CSS FollowCS2ServerGuidelines=false
 │       ├── admins.json
@@ -35,6 +35,11 @@ cs2-server-building/
 ├── mysql/init.sql                      # 预创建 weaponpaints / matchzy DB
 └── .github/workflows/build.yml         # GH Actions:fetch + gitleaks + buildx + push
 ```
+
+**镜像结构** (运行时):
+- **构建期包含**: ubuntu + apt 依赖 + SteamCMD (~2 MB) + 7 个插件 (≈150 MB)
+- **运行期下载**: CS2 游戏文件 ≈30 GB (进 `cs2-install` named volume,首次启动 SteamCMD)
+- 镜像压缩后 ≈ **350 MB**,解后 ≈ 1 GB
 
 ## 1. 一次性配置 (本地 Mac)
 
@@ -86,17 +91,19 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
 sudo apt install -y docker-compose-plugin
 
-# 4) 拉预构建镜像并启动
-docker compose pull      # 首次 ~10-15 GB
-docker compose up -d
-docker compose logs -f cs2
+# 4) 拉预构建镜像 + 启动
+docker compose pull              # ~350 MB(只镜像本身,无 CS2)
+docker compose up -d             # 首次:cs2 容器后台下载 CS2,20-30 分钟
+docker compose logs -f cs2       # 看到 [entrypoint] MySQL ready 后等 SteamCMD 完成
 ```
 
-预期日志:
+预期首次启动日志(顺序):
 ```
+[entrypoint] CS2 not found at /opt/cs2; downloading via SteamCMD...
+[entrypoint] This takes 20-30 minutes on first run; subsequent starts use cached volume.
+   ... SteamCMD 输出 (~20-30 分钟,显示 depot 下载进度) ...
 [entrypoint] Waiting for MySQL ...
 [entrypoint] MySQL ready
-[entrypoint] Updating CS2 (app 730)...
 Connection to Steam servers successful
 [MatchZy] MatchZy by WD- has been loaded!
 [WeaponPaints] Plugin loaded successfully!
@@ -108,6 +115,11 @@ $EDITOR .env
 docker compose restart cs2
 ```
 
+升级 CS2 (Valve 推了补丁):
+```bash
+docker compose restart cs2       # entrypoint 会自动 steamcmd validate,几秒-几分钟
+```
+
 ## 3. 升级 CS2 / 插件
 
 ```bash
@@ -115,11 +127,12 @@ docker compose restart cs2
 cd /Users/ryan/Documents/cc-pro/cs2-server-building
 curl -fsSL -o cs2/plugins/matchzy.zip <新版本 URL>   # 例:升级 MatchZy
 git add . && git commit -m "升级 MatchZy" && git push
-# GitHub Actions 5-10 分钟构建完 (有 cache)
+# GitHub Actions 3-5 分钟构建完 (有 cache)
 
-# 服务器 — pull + up
+# 服务器 — pull 镜像 + 重启
 ssh user@SERVER
 docker compose pull && docker compose up -d
+# entrypoint 看到 CS2 已存在(从 cs2-install volume),只跑 validate(delta update)
 ```
 
 ## 4. 端口
@@ -145,8 +158,13 @@ docker compose pull && docker compose up -d
 
 ## 6. 持久化数据
 
-`cs2-serverdata` 卷 (挂 `/opt/serverdata`):
+| 卷 | 挂载 | 大小 | 内容 |
+|---|---|---|---|
+| `cs2-install` | `/opt/cs2` | **~30 GB** | CS2 游戏文件,首次启动下载,后续 validate delta |
+| `cs2-serverdata` | `/opt/serverdata` | ~MB | server.cfg、MatchZy cfgs、WeaponPaints/MySQL 配置、demo、stats、logs |
+| `mysql-data` | `/var/lib/mysql` | ~MB-GB | 武器皮 + MatchZy 比赛统计 |
 
+`cs2-serverdata` 内结构:
 | 路径 | 内容 |
 |---|---|
 | `csgo/cfg/server.cfg` | 全局 server.cfg |
@@ -156,8 +174,6 @@ docker compose pull && docker compose up -d
 | `csgo/MatchZy/` | MatchZy 比赛 demo |
 | `csgo/MatchZy_Stats/` | MatchZy CSV 统计 |
 | `logs/` | 服务器日志 |
-
-`mysql-data` 卷 (挂 MySQL `/var/lib/mysql`):武器皮 + MatchZy 数据库。
 
 `docker compose down` 不丢,`down -v` 才丢。
 
@@ -200,12 +216,13 @@ CS2 → 设置 → 游戏 → 启用开发者控制台 ~
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| GH Actions build 失败 `no space left` | runner 70G 紧张,可加 `--no-cache` 验证;workflow 里已用 `--max-workers=1` 和 cache-from |
-| 服务器 pull 镜像超时 | GitHub Container Registry 国内访问慢 → 考虑用 ghproxy 或迁移到阿里云镜像仓库 |
+| GH Actions build 失败 `no space left` | 设计上已避免(CS2 在运行时下,镜像只 ~350 MB);若仍发生,`cache-from` 已加 |
+| 服务器 `docker compose up` 卡在 SteamCMD | CS2 首次下载 20-30 分钟,正常现象;看 `docker compose logs cs2` 看 depot 进度 |
 | 服务器 `Connection to Steam servers successful` 卡住 | 服务器出网被限,Steam 大量 CDN,加白名单 |
 | `!knife` 无反应 | WeaponPaints 未连 MySQL,看 `docker compose logs mysql` |
-| MatchZy 不响应 | `cfg/MatchZy/admins.json` 里 SteamID 是不是替换成了你的 |
+| MatchZy 不响应 | `csgo/cfg/MatchZy/admins.json` 里 SteamID 是不是替换成了你的 (在 `cs2-serverdata` 卷里) |
 | `Access denied for user 'cs2'` | MySQL 没就绪就启了 cs2,看 entrypoint 日志中 MySQL wait 是否超时 |
+| 想强制重下 CS2(比如 CS2 出问题) | `docker compose down && docker volume rm cs2-server_cs2-install && docker compose up -d` |
 
 ## 10. Security
 
