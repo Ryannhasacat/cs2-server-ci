@@ -51,6 +51,9 @@ services:
       - "${CS2_TV_PORT:-27020}:${CS2_TV_PORT:-27020}/udp"
     volumes:
       - cs2-serverdata:/opt/serverdata
+      # CS2 game files (~30 GB) downloaded by SteamCMD on first container start.
+      # Persisted across container recreations so subsequent starts are fast.
+      - cs2-install:/opt/cs2
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'cs2' >/dev/null || exit 1"]
       interval: 30s
@@ -87,4 +90,5 @@ services:
 
 volumes:
   cs2-serverdata:
+  cs2-install:
   mysql-data:

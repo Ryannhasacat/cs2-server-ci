@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1.7
-# ---------- Stage 1: SteamCMD bootstrap ----------
-FROM ubuntu:24.04 AS steamcmd
+# ---------- Stage 1: SteamCMD bootstrap (small — no CS2 yet) ----------
+FROM ubuntu:24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     STEAMCMD_DIR=/opt/steamcmd \
     CS2_APP_ID=730 \
-    CS2_DIR=/opt/cs2
+    CS2_DIR=/opt/cs2 \
+    SERVERDATA=/opt/serverdata
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -33,34 +34,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxshmfence1 \
         locales \
         tini \
-        tzdata
+        tzdata \
+        unzip
 
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
+# SteamCMD install (only ~2 MB)
 RUN mkdir -p ${STEAMCMD_DIR} \
     && curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
        | tar -xz -C ${STEAMCMD_DIR} \
     && ${STEAMCMD_DIR}/steamcmd.sh +quit || true
 
-# SteamCMD: cache Steam client + depots in /root/.steam for fast delta updates
-# (don't mount /opt/steamcmd — that's where the binaries live, mount would mask them)
-RUN --mount=type=cache,target=/root/.steam,sharing=locked \
-    ${STEAMCMD_DIR}/steamcmd.sh \
-        +force_install_dir ${CS2_DIR} \
-        +login anonymous \
-        +app_update ${CS2_APP_ID} validate \
-        +quit
-
-# ---------- Stage 2: Bake plugins (Metamod + CSS + MatchZy + WeaponPaints) ----------
-FROM steamcmd AS with-plugins
+# ---------- Stage 2: Plugins baked in ----------
+FROM base AS with-plugins
 
 USER root
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-        unzip ca-certificates
 
 COPY cs2/plugins/ /tmp/plugins/
 COPY cs2/configs/ /tmp/configs/
@@ -106,18 +95,18 @@ RUN mkdir -p ${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs/plugins/Weap
     && cp -f /tmp/configs/cfg/MatchZy/config.cfg \
               /tmp/configs/cfg/MatchZy/admins.json \
               /tmp/configs/cfg/MatchZy/database.json \
-          ${CS2_DIR}/game/csgo/cfg/MatchZy/ \
-    && chown -R 1001:1001 ${CS2_DIR}/game/csgo/addons ${CS2_DIR}/game/csgo/cfg
+          ${CS2_DIR}/game/csgo/cfg/MatchZy/
 
 # ---------- Stage 3: Runtime ----------
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     STEAMCMD_DIR=/opt/steamcmd \
-    CS2_DIR=/opt/cs2 \
     CS2_APP_ID=730 \
+    CS2_DIR=/opt/cs2 \
     SERVERDATA=/opt/serverdata
 
+# Same runtime deps as stage 1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -145,13 +134,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         locales \
         tini \
         tzdata \
+        mariadb-client \
     && useradd -m -u 1001 -s /bin/bash steam
 
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
+# SteamCMD binaries (~2 MB)
 COPY --from=with-plugins --chown=steam:steam ${STEAMCMD_DIR} ${STEAMCMD_DIR}
-COPY --from=with-plugins --chown=steam:steam ${CS2_DIR}        ${CS2_DIR}
+
+# Plugin addons/ (~150 MB). CS2 game files NOT baked in — runtime download.
+# IMPORTANT: `cs2/plugins/<plugin-dirs>` are baked with empty CS2 dirs to preserve
+# structure. Real csgo/game/ contents arrive from SteamCMD on first container start.
+# We make sure plugin addons are kept (they live under csgo/addons/, not csgo/game/).
+RUN mkdir -p ${CS2_DIR}/game
+COPY --from=with-plugins --chown=steam:steam ${CS2_DIR}/game/csgo/addons ${CS2_DIR}/game/csgo/addons
+COPY --from=with-plugins --chown=steam:steam ${CS2_DIR}/game/csgo/cfg     ${CS2_DIR}/game/csgo/cfg
+
 COPY --chown=steam:steam cs2/entrypoint.sh /entrypoint.sh
 COPY --chown=steam:steam cs2/start_cs2.sh  ${CS2_DIR}/start_cs2.sh
 RUN chmod +x /entrypoint.sh ${CS2_DIR}/start_cs2.sh
@@ -159,7 +158,7 @@ RUN chmod +x /entrypoint.sh ${CS2_DIR}/start_cs2.sh
 USER steam
 WORKDIR ${SERVERDATA}
 
-VOLUME ["/opt/serverdata"]
+VOLUME ["/opt/serverdata", "/opt/cs2"]
 
 EXPOSE 27015/udp 27015/tcp 27020/udp 27005/udp
 

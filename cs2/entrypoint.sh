@@ -25,45 +25,95 @@ substitute() {
         "$file"
 }
 
-# ---- Prepare persistent dirs under /opt/serverdata ----
+# ============================================================
+# Step 1: Ensure CS2 game files are installed.
+#   - On FIRST container start: /opt/cs2 is empty (or only has addons/cfg from image).
+#     Download full CS2 via SteamCMD (~20-30 min, ~30 GB).
+#   - On subsequent starts: validate-only (delta update, ~1-2 min if CS2 is patched).
+#   - /opt/cs2 is a NAMED VOLUME — persists across container recreations.
+# ============================================================
+ensure_cs2_installed() {
+    # If game binary already exists, do a quick validate.
+    if [ -x "${CS2_DIR}/game/bin/linux/cs2" ]; then
+        echo "[entrypoint] CS2 already installed at ${CS2_DIR}; running validate..."
+        ${STEAMCMD_DIR}/steamcmd.sh \
+            +force_install_dir "${CS2_DIR}" \
+            +login anonymous \
+            +app_update ${CS2_APP_ID} validate \
+            +quit || echo "[entrypoint] WARN: steamcmd validate failed, continuing"
+        return
+    fi
+
+    echo "[entrypoint] CS2 not found at ${CS2_DIR}; downloading via SteamCMD..."
+    echo "[entrypoint] This takes 20-30 minutes on first run; subsequent starts use cached volume."
+
+    ${STEAMCMD_DIR}/steamcmd.sh \
+        +force_install_dir "${CS2_DIR}" \
+        +login anonymous \
+        +app_update ${CS2_APP_ID} validate \
+        +quit || {
+            echo "[entrypoint] ERROR: SteamCMD failed to install CS2"
+            echo "  Check network connectivity to steamcdn-a.akamaihd.net"
+            exit 1
+        }
+}
+
+ensure_cs2_installed
+
+# ============================================================
+# Step 2: Prepare persistent dirs under /opt/serverdata.
+# ============================================================
 mkdir -p "${CSS_PERSIST}" \
          "${CSS_PERSIST}/plugins/WeaponPaints" \
          "${CFG_PERSIST}/MatchZy" \
          "${MAPS_PERSIST}" \
          "${SERVERDATA}/logs"
 
-# ---- Seed CSS configs from image to persistent dir (one-way, only on first run) ----
+# ============================================================
+# Step 3: Symlink image addons/cfg into persistent dirs.
+#   Plugins under csgo/addons/ are baked into the image at build time.
+#   Configs under csgo/cfg/ are also baked in.
+#   We re-bind both onto the persistent volume so user can edit configs.
+# ============================================================
+# CSS configs (admins.json, core.json, WeaponPaints/...) — seed once
 if [ -d "${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs" ] \
    && [ ! -L "${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs" ]; then
     cp -rn "${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs/." "${CSS_PERSIST}/" 2>/dev/null || true
 fi
-
-# ---- Seed csgo/cfg (server.cfg, MatchZy cfgs) from image to persistent dir ----
-if [ -d "${CS2_DIR}/game/csgo/cfg" ] && [ ! -L "${CS2_DIR}/game/csgo/cfg" ]; then
-    cp -rn "${CS2_DIR}/game/csgo/cfg/." "${CFG_PERSIST}/" 2>/dev/null || true
-fi
-
-# ---- Symlink image paths to persistent dirs ----
 rm -rf "${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs"
 ln -sfn "${CSS_PERSIST}" "${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs"
 
+# MatchZy cfg (warmup/knife/live/prac + config.cfg + admins + database)
+if [ -d "${CS2_DIR}/game/csgo/cfg" ] && [ ! -L "${CS2_DIR}/game/csgo/cfg" ]; then
+    cp -rn "${CS2_DIR}/game/csgo/cfg/." "${CFG_PERSIST}/" 2>/dev/null || true
+fi
 rm -rf "${CS2_DIR}/game/csgo/cfg"
 ln -sfn "${CFG_PERSIST}" "${CS2_DIR}/game/csgo/cfg"
 
+# Maps
+if [ -d "${CS2_DIR}/game/csgo/maps" ] && [ ! -L "${CS2_DIR}/game/csgo/maps" ]; then
+    cp -rn "${CS2_DIR}/game/csgo/maps/." "${MAPS_PERSIST}/" 2>/dev/null || true
+fi
 rm -rf "${CS2_DIR}/game/csgo/maps"
 ln -sfn "${MAPS_PERSIST}" "${CS2_DIR}/game/csgo/maps"
 
-# ---- Substitute env vars into plugin config files ----
+# ============================================================
+# Step 4: Substitute env vars into plugin config files.
+# ============================================================
 substitute "${CSS_PERSIST}/admins.json"
 substitute "${CSS_PERSIST}/plugins/WeaponPaints/WeaponPaints.json"
 substitute "${CFG_PERSIST}/MatchZy/admins.json"
 substitute "${CFG_PERSIST}/MatchZy/database.json"
 
-# ---- Fix ownership (volume mounts can land as root) ----
+# ============================================================
+# Step 5: Fix ownership (volume mounts can land as root).
+# ============================================================
 chown -R steam:steam "${SERVERDATA}" 2>/dev/null || true
 chown -R steam:steam "${CS2_DIR}/game/csgo/cfg" 2>/dev/null || true
 
-# ---- Wait for MySQL (defensive; depends_on already gates startup) ----
+# ============================================================
+# Step 6: Wait for MySQL (defensive; depends_on already gates startup).
+# ============================================================
 if command -v mysqladmin >/dev/null 2>&1; then
     echo "[entrypoint] Waiting for MySQL ${CS2_MYSQL_HOST:-mysql}:${CS2_MYSQL_PORT:-3306}..."
     for i in $(seq 1 30); do
@@ -75,13 +125,5 @@ if command -v mysqladmin >/dev/null 2>&1; then
         sleep 2
     done
 fi
-
-# ---- Update CS2 (no-op if up to date) ----
-echo "[entrypoint] Updating CS2 (app ${CS2_APP_ID})..."
-${STEAMCMD_DIR}/steamcmd.sh \
-    +force_install_dir "${CS2_DIR}" \
-    +login anonymous \
-    +app_update ${CS2_APP_ID} validate \
-    +quit || echo "[entrypoint] WARN: steamcmd update failed, continuing"
 
 exec "$@"
