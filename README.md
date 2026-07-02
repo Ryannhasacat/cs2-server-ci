@@ -1,15 +1,19 @@
 # CS2 Dedicated Server (Docker) + MatchZy + cs2-WeaponPaints
 
+> **📖 部署入门看本 README。日常运维、改配置、更新插件 → [`OPERATIONS.md`](OPERATIONS.md)**
+
 CS2 专用服容器,**镜像不在服务器构建** —— 由 GitHub Actions (amd64 runner) 在云端构建并推送到 GHCR,服务器只 pull。
 
-镜像 baked-in:
-- **CS2 dedicated server** (Steam app 730, ≈30 GB)
+镜像 baked-in(≈ 350 MB,很小):
 - **Metamod:Source 1.11** — mod 框架
 - **CounterStrikeSharp 1.0.370** (with-runtime)
 - **MatchZy 0.8.15** — pug / scrim / match 管理 ([docs](https://shobhit-pathak.github.io/MatchZy/))
 - **cs2-WeaponPaints build-423** — 武器/刀/手套/agent 皮肤 ([repo](https://github.com/Nereziel/cs2-WeaponPaints))
 - 三个依赖: **PlayerSettingsCS2** / **AnyBaseLibCS2** / **MenuManagerCS2**
 - **MySQL 8.0** 侧车容器
+- SteamCMD 客户端(2 MB)
+
+**CS2 专用服** (Steam app 730, ≈30 GB) **不在镜像里** — 容器首次启动由 entrypoint 调用 SteamCMD 下载到云数据盘,后续 `validate` 自动保持最新。
 
 ## 目录
 
@@ -385,7 +389,7 @@ chown $USER:$USER .env
 |---|---|
 | Steam GSLT | https://steamcommunity.com/dev/managegameservers — 撤销重发,绑 IP 立即生效 |
 | Steam Web API key | https://steamcommunity.com/dev/apikey — 撤销重发 |
-| MySQL `cs2` 用户 | `docker exec cs2-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "ALTER USER 'cs2'@'%' IDENTIFIED BY '新密码';"` + 改 .env + restart |
+| MySQL `cs2` 用户 | `docker exec cs2-mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD -e "ALTER USER 'cs2'@'%' IDENTIFIED BY '新密码';"` + 改 .env + restart |
 | MySQL root | 同上但用户是 `'root'@'localhost'` |
 | RCON | 改 `.env` 的 `CS2_RCON_PASSWORD`,`docker compose restart cs2` |
 
@@ -408,3 +412,10 @@ chown $USER:$USER .env
 **cs2-WeaponPaints** 改皮要求 `FollowCS2ServerGuidelines=false`,Valve 可能因此吊销 GSLT(作者 README 原文警告)。公网开服自担风险。
 
 本项目仅供学习/测试,使用即同意 Valve 服务条款。
+
+---
+
+## 13. 相关文档
+
+- **本 README** —— 部署入门:从 0 到跑起来
+- **[`OPERATIONS.md`](OPERATIONS.md)** —— 运维手册:改配置、升级插件、RCON 命令、备份恢复、故障排查、灾难恢复
