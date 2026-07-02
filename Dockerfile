@@ -54,6 +54,13 @@ USER root
 COPY cs2/plugins/ /tmp/plugins/
 COPY cs2/configs/ /tmp/configs/
 
+# CS2 game dir does not exist yet (CS2 downloads at container runtime).
+# Create the structure so plugins can be placed in their final positions.
+RUN mkdir -p ${CS2_DIR}/game/csgo/addons/counterstrikesharp/configs \
+         ${CS2_DIR}/game/csgo/addons/counterstrikesharp/plugins \
+         ${CS2_DIR}/game/csgo/addons/counterstrikesharp/shared \
+         ${CS2_DIR}/game/csgo/cfg
+
 # 1. Metamod:Source 1.11 -> csgo/addons/metamod/
 RUN tar -xzf /tmp/plugins/mmsource.tar.gz -C ${CS2_DIR}/game/csgo/
 
