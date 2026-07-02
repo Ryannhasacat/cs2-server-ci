@@ -1,0 +1,96 @@
+name: build-cs2-dedicated
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'cs2/plugins/**'
+      - 'cs2/configs/**'
+      - 'cs2/scripts/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: cs2-dedicated
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # gitleaks: catch any committed secret (API key, MySQL password, etc.)
+      # Fails the workflow BEFORE docker build, keeping logs clean of secrets.
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        with:
+          args: --redact --no-banner .
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --max-workers=1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fetch the 7 plugin archives (zip/tar) into cs2/plugins/.
+      # CI caches the archives on the runner for next build via GHA cache.
+      - name: Fetch plugin archives
+        run: bash cs2/scripts/fetch-plugins.sh
+
+      - name: Cache plugin archives across runs
+        uses: actions/cache@v4
+        with:
+          path: cs2/plugins/
+          key: plugins-${{ hashFiles('cs2/scripts/fetch-plugins.sh') }}
+          restore-keys: |
+            plugins-
+
+      - name: Extract metadata for tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=git-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  notify:
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump diagnostics
+        run: |
+          echo "::error::CS2 image build failed. Check the 'build' job logs."
+          df -h
+          echo "--- failed jobs ---"

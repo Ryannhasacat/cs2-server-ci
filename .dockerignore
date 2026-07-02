@@ -1,0 +1,14 @@
+.git
+.gitignore
+.github
+.env
+.env.*
+!.env.example
+*.log
+*.dem
+cs2-serverdata/
+**/node_modules
+.DS_Store
+*.pem
+*.key
+secrets/

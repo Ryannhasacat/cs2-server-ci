@@ -1,0 +1,8 @@
+{
+    "DatabaseType": "MySQL",
+    "MySqlHost": "__CS2_MYSQL_HOST__",
+    "MySqlDatabase": "__CS2_MYSQL_DB_MATCH__",
+    "MySqlUsername": "__CS2_MYSQL_USER__",
+    "MySqlPassword": "__CS2_MYSQL_PASS__",
+    "MySqlPort": __CS2_MYSQL_PORT__
+}

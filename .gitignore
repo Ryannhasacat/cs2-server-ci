@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+*.p12
+*.pfx
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# Build artifacts
+*.log
+*.dem
+*.tmp
+*.tar.gz~
+*.zip~
+
+# Local Docker volumes / runtime data
+cs2-serverdata/
+mysql-data/
+
+# Auto-generated configs the user might overwrite locally
+# (entrypoint seeds these from image; don't commit user edits)
+cs2/local-configs/
+
+# Plugin zips — fetched by cs2/scripts/fetch-plugins.sh
+cs2/plugins/
+
+# GitHub Actions — runtime
+.github/workflows/.cache/

@@ -1,0 +1,90 @@
+name: cs2-dedicated
+
+services:
+  cs2:
+    # Image built by GitHub Actions (.github/workflows/build.yml) and pushed to GHCR.
+    # To pin to a specific commit, change 'latest' to 'git-<sha-short>'.
+    image: ghcr.io/ryannhasacat/cs2-dedicated:latest
+    container_name: cs2-server
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # ---- Network ----
+      CS2_PORT: ${CS2_PORT:-27015}
+      CS2_TV_PORT: ${CS2_TV_PORT:-27020}
+      CS2_TICKRATE: ${CS2_TICKRATE:-64}
+      CS2_REGION: ${CS2_REGION:-3}
+      CS2_LAN: ${CS2_LAN:-0}
+      # ---- Match ----
+      CS2_MAXPLAYERS: ${CS2_MAXPLAYERS:-10}
+      CS2_GAMEMODE: ${CS2_GAMEMODE:-competitive}
+      CS2_HOTNAME: ${CS2_HOTNAME:-CS2 Dedicated Server}
+      # ---- Auth ----
+      CS2_RCON_PASSWORD: ${CS2_RCON_PASSWORD:-changeme-rcon}
+      CS2_SERVER_PASSWORD: ${CS2_SERVER_PASSWORD:-}
+      CS2_GSLT: ${CS2_GSLT:-}
+      CS2_AUTHKEY: ${CS2_AUTHKEY:-}
+      CS2_ADMIN_STEAMID: ${CS2_ADMIN_STEAMID:-}
+      # ---- Workshop (optional) ----
+      CS2_HOST_WORKSHOP_MAP: ${CS2_HOST_WORKSHOP_MAP:-}
+      CS2_WORKSHOP_COLLECTION: ${CS2_WORKSHOP_COLLECTION:-}
+      # ---- GOTV ----
+      CS2_TV_ENABLE: ${CS2_TV_ENABLE:-1}
+      CS2_TV_DELAY: ${CS2_TV_DELAY:-0}
+      # ---- MySQL (consumed by MatchZy + cs2-WeaponPaints) ----
+      CS2_MYSQL_HOST: ${CS2_MYSQL_HOST:-mysql}
+      CS2_MYSQL_PORT: ${CS2_MYSQL_PORT:-3306}
+      CS2_MYSQL_USER: ${CS2_MYSQL_USER:-cs2}
+      CS2_MYSQL_PASS: ${CS2_MYSQL_PASS:-changeme-cs2}
+      CS2_MYSQL_DB_WEAPON: ${CS2_MYSQL_DB_WEAPON:-weaponpaints}
+      CS2_MYSQL_DB_MATCH: ${CS2_MYSQL_DB_MATCH:-matchzy}
+      # ---- Escape hatch ----
+      CS2_EXTRA_ARGS: ${CS2_EXTRA_ARGS:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${CS2_PORT:-27015}:${CS2_PORT:-27015}/udp"
+      - "${CS2_PORT:-27015}:${CS2_PORT:-27015}/tcp"
+      - "${CS2_TV_PORT:-27020}:${CS2_TV_PORT:-27020}/udp"
+    volumes:
+      - cs2-serverdata:/opt/serverdata
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'cs2' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  mysql:
+    image: mysql:8.0
+    container_name: cs2-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme-root}
+      MYSQL_DATABASE: ${CS2_MYSQL_DB_WEAPON:-weaponpaints}
+      MYSQL_USER: ${CS2_MYSQL_USER:-cs2}
+      MYSQL_PASSWORD: ${CS2_MYSQL_PASS:-changeme-cs2}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=caching_sha2_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-changeme-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  cs2-serverdata:
+  mysql-data:

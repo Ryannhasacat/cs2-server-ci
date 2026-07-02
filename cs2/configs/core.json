@@ -1,0 +1,8 @@
+{
+  "FollowCS2ServerGuidelines": false,
+  "PublicChatTrigger": ".",
+  "SilentChatTrigger": "/",
+  "FollowServerGuidelines": false,
+  "PluginHotReloadEnabled": false,
+  "ServerLang": "en"
+}

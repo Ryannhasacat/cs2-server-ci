@@ -1,0 +1,37 @@
+{
+    "Version": 4,
+    "DatabaseHost": "__CS2_MYSQL_HOST__",
+    "DatabasePort": __CS2_MYSQL_PORT__,
+    "DatabaseUser": "__CS2_MYSQL_USER__",
+    "DatabasePassword": "__CS2_MYSQL_PASS__",
+    "DatabaseName": "__CS2_MYSQL_DB_WEAPON__",
+    "CmdRefreshCooldownSeconds": 60,
+    "Prefix": "[WeaponPaints]",
+    "Website": "",
+    "Messages": {
+        "WebsiteMessageCommand": "",
+        "SynchronizeMessageCommand": "Type !wp to synchronize chosen skins.",
+        "KnifeMessageCommand": "Type !knife to open knife menu.",
+        "CooldownRefreshCommand": "You can't refresh weapon paints right now.",
+        "SuccessRefreshCommand": "Refreshing weapon paints.",
+        "ChosenKnifeMenu": "You have chosen {KNIFE} as your knife.",
+        "ChosenSkinMenu": "You have chosen {SKIN} as your skin.",
+        "ChosenKnifeMenuKill": "Type !kill to apply the knife skin.",
+        "KnifeMenuTitle": "Knife Menu",
+        "WeaponMenuTitle": "Weapon Menu",
+        "SkinMenuTitle": "Select skin for {WEAPON}"
+    },
+    "Additional": {
+        "KnifeEnabled": true,
+        "SkinEnabled": true,
+        "CommandWpEnabled": true,
+        "CommandKillEnabled": true,
+        "CommandKnife": "knife",
+        "CommandSkin": "ws",
+        "CommandSkinSelection": "skins",
+        "CommandRefresh": "wp",
+        "CommandKill": "kill",
+        "GiveRandomKnife": false,
+        "GiveRandomSkins": false
+    }
+}
